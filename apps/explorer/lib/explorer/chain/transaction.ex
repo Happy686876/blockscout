@@ -252,6 +252,7 @@ defmodule Explorer.Chain.Transaction.Schema do
         field(:type, :integer)
         field(:has_error_in_internal_transactions, :boolean)
         field(:has_token_transfers, :boolean, virtual: true)
+        field(:internal_transactions, {:array, :map}, virtual: true)
 
         # stability virtual fields
         field(:transaction_fee_log, :any, virtual: true)
@@ -275,7 +276,6 @@ defmodule Explorer.Chain.Transaction.Schema do
           type: Hash.Address
         )
 
-        has_many(:internal_transactions, InternalTransaction, foreign_key: :transaction_hash, references: :hash)
         has_many(:logs, Log, foreign_key: :transaction_hash, references: :hash)
 
         has_many(:token_transfers, TokenTransfer, foreign_key: :transaction_hash, references: :hash)
@@ -339,7 +339,7 @@ defmodule Explorer.Chain.Transaction do
   alias Ecto.Changeset
   alias EthereumJSONRPC
   alias EthereumJSONRPC.Transaction, as: EthereumJSONRPCTransaction
-  alias Explorer.{Chain, Helper, PagingOptions, Repo, SortingHelper}
+  alias Explorer.{Chain, Helper, PagingOptions, QueryHelper, Repo, SortingHelper}
 
   alias Explorer.Chain.{
     Address,
@@ -1449,6 +1449,17 @@ defmodule Explorer.Chain.Transaction do
     from(
       t in __MODULE__,
       where: t.hash in ^hashes
+    )
+  end
+
+  @doc """
+  Builds an `Ecto.Query` to fetch transaction by {block_number, index} pairs
+  """
+  @spec by_block_number_index_query([{non_neg_integer(), non_neg_integer()}]) :: Ecto.Query.t()
+  def by_block_number_index_query(block_number_index_pairs) do
+    from(
+      t in __MODULE__,
+      where: ^QueryHelper.tuple_in([:block_number, :index], block_number_index_pairs)
     )
   end
 
@@ -2986,6 +2997,36 @@ defmodule Explorer.Chain.Transaction do
     transaction_hashes
     |> by_hashes_query()
     |> Repo.all()
+  end
+
+  @doc """
+  Finds transactions by {block_number, index} pairs
+  """
+  @spec get_transactions_by_block_number_index([{non_neg_integer(), non_neg_integer()}]) :: [__MODULE__.t()]
+  def get_transactions_by_block_number_index(block_number_index_pairs) do
+    block_number_index_pairs
+    |> by_block_number_index_query()
+    |> Repo.all()
+  end
+
+  def preload_internal_transactions(transactions) when is_list(transactions) do
+    block_number_index_to_internal_transactions_map =
+      transactions
+      |> Enum.map(&{&1.block_number, &1.index})
+      |> Enum.uniq()
+      |> InternalTransaction.get_by_block_number_transaction_index()
+      |> Enum.group_by(&{&1.block_number, &1.transaction_index})
+
+    Enum.map(
+      transactions,
+      &Map.put(&1, :internal_transactions, block_number_index_to_internal_transactions_map[{&1.block_number, &1.index}])
+    )
+  end
+
+  def preload_transaction(internal_transaction) do
+    [internal_transaction]
+    |> preload_transaction()
+    |> List.first()
   end
 
   @doc """
